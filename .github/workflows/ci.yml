@@ -1,0 +1,38 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+        with:
+          python-version: "3.12"
+          activate-environment: true
+      - name: Install
+        run: uv pip install -e ".[api,app,dev]"
+      - name: Lint
+        run: ruff check . && ruff format --check .
+      - name: Retrain from scratch (checks the pipeline is reproducible)
+        run: python -m churn.train
+      - name: Test (includes model quality gate)
+        run: pytest -q
+
+  docker:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build -t churn-prediction .
+      - name: Smoke-test API container
+        run: |
+          docker run -d -p 8000:8000 --name api churn-prediction
+          for i in $(seq 1 30); do curl -fs localhost:8000/health && break; sleep 2; done
+          curl -fs -X POST localhost:8000/predict -H 'content-type: application/json' \
+            -d @tests/sample_customer.json
